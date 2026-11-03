@@ -10,6 +10,7 @@ mod focus;
 mod grabs;
 mod handlers;
 mod input;
+pub mod screencopy;
 
 #[cfg(feature = "xwayland")]
 mod xwayland;

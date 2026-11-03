@@ -201,7 +201,7 @@ impl State {
         {
             return;
         }
-        let Some((window, _)) = self.space.element_under(position) else {
+        let Some((window, _)) = self.window_under_owned(position) else {
             return;
         };
         let Some(id) = self.shell.id_of_window(&window) else {
@@ -330,8 +330,7 @@ impl State {
             && !self.pointer_over_layer(self.pointer_location)
         {
             let target = self
-                .space
-                .element_under(self.pointer_location)
+                .window_under_owned(self.pointer_location)
                 .map(|(window, _)| window.clone());
 
             if let Some(window) = target {
@@ -401,8 +400,7 @@ impl State {
             && !self.pointer_over_layer(self.pointer_location)
         {
             let target = self
-                .space
-                .element_under(self.pointer_location)
+                .window_under_owned(self.pointer_location)
                 .map(|(window, _)| window.clone());
 
             match target {
@@ -626,8 +624,13 @@ impl State {
     ) {
         match id {
             Some(id) if self.shell.find(id).is_some() => {
-                if let Some(entry) = self.shell.find(id) {
-                    let output = entry.output.clone();
+                // 浮动窗口拖动跨屏后 `Shell` 里的输出还是旧的；焦点要跟着
+                // 窗口实际所在的输出走，否则会把指针拉回原来的屏。
+                let output = self
+                    .shell
+                    .window(id)
+                    .and_then(|window| self.owner_output(window));
+                if let Some(output) = output {
                     self.focus_output(&output);
                 }
                 self.shell.set_focus(id);

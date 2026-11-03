@@ -246,13 +246,16 @@ fn redraw(state: &mut State) {
                 );
             }
 
+            // 只画归属于本输出的窗口：跨在输出边界上的列不会被画到邻屏，
+            // 但在本输出上该可见的部分仍然保留。
+            let render_space = state.render_space_for_output(&output);
             match render_output::<_, OverlayElement<GlesRenderer>, _, _>(
                 &output,
                 renderer,
                 &mut framebuffer,
                 1.0,
                 0,
-                [&state.space],
+                [render_space.space()],
                 &overlay,
                 &mut data.damage_tracker,
                 CLEAR_COLOR,

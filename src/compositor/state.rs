@@ -208,6 +208,33 @@ pub struct State {
     pub x11_override: Vec<Window>,
 }
 
+/// 某个输出的「渲染视图」：只含归属于它的窗口。
+///
+/// Smithay 的 `Space` 没有「元素属于哪个输出」的概念，渲染时只看矩形是否
+/// 与输出相交。scroll 的行会滚到输出边界，直接渲染全局 `Space` 会把窗口的
+/// 越界部分画到邻屏；而如果为了避免这一点把跨边界的窗口整个 unmap，本输出
+/// 上本来该可见的那部分也会一起消失（表现就是「focus 左边窗口时右边的窗口
+/// 不见了」）。所以渲染时按 `Shell` 里的归属过滤，邻屏什么都不画。
+///
+/// 临时 `Space` 在销毁前必须 `unmap_output`：`map_output` 会把位置写进输出
+/// 的 data_map（按 Space id 索引），不清理的话每帧都会留下一条。
+pub struct RenderSpace {
+    space: Space<Window>,
+    output: Output,
+}
+
+impl RenderSpace {
+    pub fn space(&self) -> &Space<Window> {
+        &self.space
+    }
+}
+
+impl Drop for RenderSpace {
+    fn drop(&mut self) {
+        self.space.unmap_output(&self.output);
+    }
+}
+
 impl State {
     pub fn new(
         event_loop: &mut EventLoop<'static, Self>,
@@ -243,6 +270,8 @@ impl State {
         // 输入法的兜底通道：不支持 text-input-v3 的客户端（部分终端/游戏）
         // 由 fcitx5 通过虚拟键盘注入按键。
         VirtualKeyboardManagerState::new::<Self, _>(&display_handle, |_client| true);
+        // 截图/录屏：grim 依赖的 wlr-screencopy。
+        super::screencopy::init(&display_handle);
 
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&display_handle, "r0wm");
@@ -609,24 +638,6 @@ impl State {
         }
         self.refresh_surface_scales();
         self.publish_output_event();
-    }
-
-    /// 除 `name` 以外所有输出的桌面矩形。
-    ///
-    /// 平铺窗口/标题条只应该出现在自己的输出上；Scroll 行滚到边界后目标矩形
-    /// 可能压到隔壁输出，合成器必须自己裁掉，Smithay 的 `Space` 不做归属判断。
-    fn other_output_areas(&self, name: &str) -> Vec<Rect> {
-        self.outputs
-            .iter()
-            .filter(|output| output.name() != name)
-            .filter_map(|output| self.space.output_geometry(output))
-            .map(|geo| Rect {
-                x: geo.loc.x,
-                y: geo.loc.y,
-                width: geo.size.w,
-                height: geo.size.h,
-            })
-            .collect()
     }
 
     /// 指定输出的 bar。
@@ -1595,18 +1606,13 @@ impl State {
             }
             return;
         }
-        let other_outputs = self.other_output_areas(output);
         let mut slots: Vec<TitlePlacement> = self
             .shell
             .title_slices(output, area)
             .into_iter()
-            // 与窗口映射保持一致：滚出本输出的列连标题条也不要画到别的输出上。
-            .filter(|slice| {
-                slice.rect.overlaps(area)
-                    && !other_outputs
-                        .iter()
-                        .any(|other| slice.rect.overlaps(*other))
-            })
+            // 标题条是每个输出自己的自定义元素，只会画在本输出的画面上；
+            // 跨在边界上的切片交给帧缓冲自然裁切即可。
+            .filter(|slice| slice.rect.overlaps(area))
             .map(|slice| TitlePlacement {
                 id: slice.id,
                 rect: Rectangle::new(
@@ -1618,9 +1624,10 @@ impl State {
             })
             .collect();
         for entry in self.shell.iter() {
-            if entry.output != output
-                || entry.layer != Layer::Floating
+            if entry.layer != Layer::Floating
                 || !tag_visible(entry.tags, entry.sticky, visible)
+                // 浮动窗口拖动跨屏后 `entry.output` 还是旧的，标题条要跟窗口走。
+                || self.owner_output(&entry.window).as_deref() != Some(output)
             {
                 continue;
             }
@@ -1896,6 +1903,84 @@ impl State {
             .or_else(|| self.output.clone())
     }
 
+    /// 窗口归属的输出名。
+    ///
+    /// 平铺窗口以 `Shell` 的记录为准——scroll 行可以跨在输出边界上，只有
+    /// 归属方才有权决定「本输出该显示哪一截」。
+    ///
+    /// 浮动/全屏窗口会随拖动跨屏，`Shell` 里的输出不会跟着变，所以按窗口
+    /// 中心所在的输出归属。override-redirect 窗口根本不在 `Shell` 里，走
+    /// 同一条几何判定（X11 菜单/tooltip 不会跨屏）。
+    pub fn owner_output(&self, window: &Window) -> Option<String> {
+        if let Some(entry) = self
+            .shell
+            .id_of_window(window)
+            .and_then(|id| self.shell.find(id))
+            && entry.layer == Layer::Tiled
+        {
+            return Some(entry.output.clone());
+        }
+        let geo = self.space.element_geometry(window)?;
+        let center = geo.loc.to_f64() + geo.size.to_f64() / 2.0;
+        self.space
+            .output_under(center)
+            .next()
+            .map(|output| output.name())
+    }
+
+    /// 指针位置下、且归属于该位置所在输出的最上层窗口。
+    ///
+    /// 与 [`State::render_space_for_output`] 用同一套归属判定：跨在输出边界上
+    /// 的窗口只在自己的输出上可见，邻屏的点不能命中它，否则会聚焦到一个在
+    /// 那边根本看不见的窗口。
+    pub fn window_under_owned(
+        &self,
+        pos: Point<f64, Logical>,
+    ) -> Option<(Window, Point<i32, Logical>)> {
+        use smithay::desktop::WindowSurfaceType;
+
+        let name = self.output_at(pos)?.name();
+        for window in self.space.elements().rev() {
+            if self.owner_output(window).as_deref() != Some(name.as_str()) {
+                continue;
+            }
+            let Some(location) = self.space.element_location(window) else {
+                continue;
+            };
+            // 与 `Space::element_under` 一致：surface 的坐标相对窗口几何原点。
+            let render_location = location - window.geometry().loc;
+            if window
+                .surface_under(pos - render_location.to_f64(), WindowSurfaceType::ALL)
+                .is_some()
+            {
+                return Some((window.clone(), render_location));
+            }
+        }
+        None
+    }
+
+    /// 为某个输出构建只含本输出窗口的渲染视图。
+    pub fn render_space_for_output(&self, output: &Output) -> RenderSpace {
+        let name = output.name();
+        let mut space = Space::default();
+        if let Some(geo) = self.space.output_geometry(output) {
+            space.map_output(output, geo.loc);
+        }
+        // 全局 Space 的插入顺序就是 z 序（后插入的在上），照抄即可。
+        for window in self.space.elements() {
+            if self.owner_output(window).as_deref() != Some(name.as_str()) {
+                continue;
+            }
+            if let Some(location) = self.space.element_location(window) {
+                space.map_element(window.clone(), location, false);
+            }
+        }
+        RenderSpace {
+            space,
+            output: output.clone(),
+        }
+    }
+
     /// 指针下最深的 wayland surface，以及它在全局坐标里的位置。
     pub fn surface_under(
         &self,
@@ -1927,16 +2012,11 @@ impl State {
                 }
             }
             // 窗口位于 Top 与 Bottom 层之间。
-            if let Some(hit) = self
-                .space
-                .element_under(pos)
-                .and_then(|(window, location)| {
-                    window
-                        .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
-                        .map(|(surface, point)| (surface, (point + location).to_f64()))
-                })
+            if let Some((window, location)) = self.window_under_owned(pos)
+                && let Some((surface, point)) =
+                    window.surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
             {
-                return Some(hit);
+                return Some((surface, (point + location).to_f64()));
             }
             for layer in [WlrLayer::Bottom, WlrLayer::Background] {
                 if let Some(hit) = layer_hit(layer) {
@@ -1946,13 +2026,11 @@ impl State {
             return None;
         }
 
-        self.space
-            .element_under(pos)
-            .and_then(|(window, location)| {
-                window
-                    .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
-                    .map(|(surface, point)| (surface, (point + location).to_f64()))
-            })
+        self.window_under_owned(pos).and_then(|(window, location)| {
+            window
+                .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                .map(|(surface, point)| (surface, (point + location).to_f64()))
+        })
     }
 
     /// 指针是否落在窗口之上的 layer-shell 表面（bar、菜单等）。
@@ -2222,7 +2300,6 @@ impl State {
                 .into_iter()
                 .collect();
             let visible = self.shell.visible_tags(&name);
-            let other_outputs = self.other_output_areas(&name);
 
             for entry in entries.iter().filter(|entry| entry.output == name) {
                 if !tag_visible(entry.tags, entry.sticky, visible) {
@@ -2232,14 +2309,11 @@ impl State {
 
                 match entry.layer {
                     Layer::Tiled => match targets.get(&entry.id) {
-                        // scroll 的行会一直向两侧延伸；滚出本输出工作区、或压到
-                        // 别的输出上的列不能再留在 Space 里，否则会被相邻输出
-                        // 当成本输出的窗口画出来（Smithay 按输出区域裁剪，
-                        // 不看元素归属）。
-                        Some(rect)
-                            if rect.overlaps(area)
-                                && !other_outputs.iter().any(|other| rect.overlaps(*other)) =>
-                        {
+                        // scroll 的行会一直向两侧延伸。完全滚出本输出工作区的列
+                        // 从 Space 里摘掉；但跨在输出边界上的列必须保留——它在
+                        // 本输出上还有可见部分。邻屏由渲染层的
+                        // `State::render_space_for_output` 按归属过滤掉，不会画过去。
+                        Some(rect) if rect.overlaps(area) => {
                             let content = Rect {
                                 x: rect.x,
                                 y: rect.y + th,

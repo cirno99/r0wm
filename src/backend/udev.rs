@@ -112,8 +112,8 @@ struct SurfaceData {
 }
 
 /// 一块已经打开的 GPU。
-struct DeviceData {
-    renderer: GlesRenderer,
+pub(crate) struct DeviceData {
+    pub(crate) renderer: GlesRenderer,
     manager: UdevOutputManager,
     scanner: DrmScanner,
     surfaces: HashMap<crtc::Handle, SurfaceData>,
@@ -129,7 +129,7 @@ pub struct UdevData {
     /// 我们使用的那块 GPU（DRM 主节点）。
     node: DrmNode,
     /// 设备被拔掉或会话挂起时为空。
-    device: Option<DeviceData>,
+    pub(crate) device: Option<DeviceData>,
 }
 
 impl UdevData {
@@ -730,7 +730,10 @@ fn render_device(
                 .map(|element| UdevRenderElement::Overlay(OverlayElement::Bar(element))),
         );
     }
-    match space_render_elements::<_, Window, _>(renderer, [&state.space], output, 1.0) {
+    // 只画归属于本输出的窗口：跨在输出边界上的列不会被画到邻屏，
+    // 但在本输出上该可见的部分仍然保留。
+    let render_space = state.render_space_for_output(output);
+    match space_render_elements::<_, Window, _>(renderer, [render_space.space()], output, 1.0) {
         Ok(space_elements) => {
             elements.extend(space_elements.into_iter().map(UdevRenderElement::Space));
         }

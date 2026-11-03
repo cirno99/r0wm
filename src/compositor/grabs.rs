@@ -55,8 +55,7 @@ impl PointerGrab<State> for MoveSurfaceGrab {
         // 平铺窗口不自由移动：拖到哪个格子上，就和那个窗口交换（i3/sway 式）。
         if let Some((id, Layer::Tiled)) = grabbed {
             let target = data
-                .space
-                .element_under(event.location)
+                .window_under_owned(event.location)
                 .map(|(window, _)| window.clone());
             if let Some(target) = target
                 && target != self.window

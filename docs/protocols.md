@@ -61,7 +61,8 @@
 `zxdg_decoration_manager_v1`、`xdg_activation_v1`、`zwlr_layer_shell_v1`、
 `wp_viewporter`、`wp_presentation`、`zwp_linux_dmabuf_v1`（v3）、
 `wp_fractional_scale_manager_v1`、`zwp_text_input_manager_v3`、
-`zwp_input_method_manager_v2`、`zwp_virtual_keyboard_manager_v1`。
+`zwp_input_method_manager_v2`、`zwp_virtual_keyboard_manager_v1`、
+`zwlr_screencopy_manager_v1`（v3，仅 shm 缓冲）。
 
 窗口生命周期已含 `toplevel_destroyed`、`title_changed` / `app_id_changed`（推 IPC 事件）。
 layer-shell 已接入映射、exclusive zone → 工作区、初始 configure 与指针命中；

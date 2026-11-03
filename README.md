@@ -48,7 +48,7 @@ tag、算式、文件各一个模式前缀，带模糊匹配、历史与使用�
 
 - 托盘菜单的圆角/边框细节比基线简化（功能对齐）；图标只查 `hicolor`、
   不认 `.xpm`（与基线同源的取舍）；
-- wlr-screencopy 等输出类协议待后续；
+- wlr-screencopy 只实现 shm 缓冲（grim/wf-recorder 默认路径），dmabuf 路径待补；
 - udev 后端支持一块 GPU 上的多个输出；跨 GPU 仍需要 `MultiRenderer` 拷贝，
   没有接入 EDID 解析，`wl_output` 的厂商/型号是 `Unknown`。
 
