@@ -35,7 +35,7 @@ use smithay::{
         },
     },
     render_elements,
-    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
+    utils::{Buffer, IsAlive, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
     wayland::{
         Dispatch2, GlobalDispatch2,
         shm::{self, with_buffer_contents_mut},
@@ -331,7 +331,7 @@ fn copy_frame(
         return;
     }
 
-    // `pixels` 已经翻成自上而下，客户端不需要再翻。
+    // 读回的像素本来就是自上而下，客户端不需要再翻。
     frame.flags(Flags::empty());
     if with_damage {
         frame.damage(0, 0, region.size.w as u32, region.size.h as u32);
@@ -478,29 +478,22 @@ fn render_with_renderer(
     )
     .context("渲染截图帧失败")?;
 
-    // OpenGL 的原点在左下角：先把裁切区域翻成 GL 坐标，读完再把行倒过来。
-    // `region` 已经是缓冲坐标，翻转以缓冲高度为基准。
-    let gl_region = Rectangle::new(
-        Point::from((region.loc.x, output_size.h - region.loc.y - region.size.h)),
+    // `copy_framebuffer` 的坐标与行序都以缓冲左上角为原点：区域直接转成
+    // Buffer 坐标传入，读回来的行也已经是自上而下，不能再手动翻转一次。
+    let buffer_region = Rectangle::<i32, Buffer>::new(
+        Point::from((region.loc.x, region.loc.y)),
         Size::from((region.size.w, region.size.h)),
     );
     let mapping = renderer
-        .copy_framebuffer(&target, gl_region, Fourcc::Argb8888)
+        .copy_framebuffer(&target, buffer_region, Fourcc::Argb8888)
         .context("读取截图像素失败")?;
     let raw = renderer.map_texture(&mapping).context("映射截图像素失败")?;
 
-    let row = region.size.w as usize * 4;
-    let len = row * region.size.h as usize;
+    let len = region.size.w as usize * region.size.h as usize * 4;
     if raw.len() < len {
         bail!("截图像素长度不足：{} < {len}", raw.len());
     }
-    let mut pixels = vec![0u8; len];
-    for y in 0..region.size.h as usize {
-        let src = (region.size.h as usize - 1 - y) * row;
-        pixels[y * row..(y + 1) * row].copy_from_slice(&raw[src..src + row]);
-    }
-
-    Ok(pixels)
+    Ok(raw[..len].to_vec())
 }
 
 #[cfg(test)]
