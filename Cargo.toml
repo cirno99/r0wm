@@ -1,0 +1,73 @@
+[package]
+name = "r0wm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+license = "GPL-3.0-or-later"
+description = "以 g0wm 为对标基线的 Rust 版 Wayland 合成器，自带 scroll 布局"
+repository = "https://github.com/cirno99/r0wm"
+publish = false
+
+[dependencies]
+# 底座：跟随上游 git、按 commit 固定（ADR 0002）。
+# 升级必须显式改这里的 rev，而不是 cargo update 的副作用。
+smithay = { git = "https://github.com/Smithay/Smithay.git", rev = "c7a26ade404dd7593d92514fb571922dccd1050a", default-features = false, features = [
+    "desktop",
+    "wayland_frontend",
+    "renderer_glow",
+] }
+calloop = "0.14.5"
+# DRM 连接器扫描与 CRTC 映射：与 smithay 同仓同 rev，关掉 display-info
+# 就不会引入 libdisplay-info 这个 C 依赖（EDID 的厂商/型号暂时留空）。
+smithay-drm-extras = { git = "https://github.com/Smithay/Smithay.git", rev = "c7a26ade404dd7593d92514fb571922dccd1050a", default-features = false, optional = true }
+# IPC 消息的序列化（ADR 0007；配置已改为手写 KDL 前端）
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+# 光标主题（XCURSOR_THEME / XCURSOR_SIZE）解析；只读文件，无 C 依赖。
+xcursor = "0.3"
+# bar 文本：纯 Rust 字体栈。fontdb 的 fontconfig 特性只是解析 fonts.conf，
+# 不链接 libfontconfig，所以构建环境不需要 fontconfig 开发包。
+cosmic-text = "0.19"
+# 图标解码：PNG（通知/runner/systray 的位图图标）。只开 png，不拉整套编解码器。
+image = { version = "0.25", default-features = false, features = ["png"] }
+# SVG 图标：resvg 关掉 text/system-fonts，就不需要 fontdb 与 rustybuzz。
+# 图标主题里的 scalable 图标大多是纯路径，这已经够用。
+resvg = { version = "0.46", default-features = false }
+# 通知守护：实现 org.freedesktop.Notifications（D-Bus 会话总线）。
+# 用 zbus 的 blocking 连接跑在独立线程里，与合成器通过 calloop channel 通信，
+# 避免把 async 运行时塞进渲染线程；默认特性 async-io 不依赖 tokio。
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+# niri 风格配置（KDL）。开 v1-fallback，niri 常用的 `true`/`false` 与
+# 单行 child block 写法都能直接解析。
+kdl = { version = "6", features = ["v1-fallback"] }
+
+[features]
+# 开发/集成冒烟用的嵌套后端（ADR：udev 一等公民 + winit 嵌套）
+default = ["winit"]
+winit = ["smithay/backend_winit"]
+# 真机 DRM + libinput + libseat
+udev = [
+    "dep:smithay-drm-extras",
+    "smithay/backend_udev",
+    "smithay/backend_libinput",
+    "smithay/backend_session_libseat",
+    "smithay/backend_drm",
+    "smithay/backend_gbm",
+    "smithay/renderer_multi",
+]
+# X11 窗口支持
+xwayland = ["smithay/xwayland"]
+
+[[bin]]
+name = "r0wm"
+path = "src/main.rs"
+
+[[bin]]
+name = "r0wmctl"
+path = "src/bin/r0wmctl.rs"
+
+[profile.release]
+lto = "thin"

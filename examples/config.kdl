@@ -1,0 +1,137 @@
+// r0wm 配置示例（niri 风格 KDL）
+//
+// 放到 $XDG_CONFIG_HOME/r0wm/config.kdl（默认 ~/.config/r0wm/config.kdl）。
+// 用 `super+shift+e` 热重载；解析失败会保留上一份有效配置。
+
+input {
+    keyboard {
+        // 直接交给 xkbcommon。中文输入法（fcitx5/ibus）另需在会话里启动，
+        // 并通过 text-input-v3 / input-method-v2 连到 r0wm。
+        xkb {
+            layout "us,cn"
+            variant ","
+            options "grp:alt_shift_toggle"
+        }
+        repeat-delay 200
+        repeat-rate 25
+    }
+}
+
+// 可选：按输出名覆盖缩放、位置与模式。名字来自 wl_output（如 eDP-1）。
+output "eDP-1" {
+    scale 1.5
+    position x=0 y=0
+    primary
+}
+
+output "HDMI-A-1" {
+    position x=1920 y=0
+    mode "1920x1080@60"
+    transform "normal"
+}
+
+layout {
+    default "bsp"        // bsp | scroll | tabbed
+    default-column-width { proportion 0.5; }
+    preset-column-widths {
+        proportion 0.33333
+        proportion 0.5
+        proportion 0.66667
+        proportion 1.0
+    }
+}
+
+general {
+    terminal "foot"
+    move-snap 12
+    move-threshold 4
+    autostart "foot"
+    // autostart "fcitx5 -d"   // 需要时把输入法也拉起来
+
+    bar {
+        enabled true
+        position "top"        // top | bottom
+        height 1.1
+        font-size 12
+        // font-family "Maple Mono NF"
+        window-title false
+        // stdout 的每一行都会刷新右侧状态文本（类似 scroll 的 status_command）。
+        // status-command "while :; do date '+%H:%M'; sleep 5; done"
+    }
+
+    titlebar {
+        enabled true
+        padding 6
+        center true
+        close true
+        close-color "#ff5f57"
+    }
+
+    notifications {
+        enabled true
+        timeout 5
+        line-width 4
+        line-radius 2
+        action-sign "[r]"
+    }
+
+    runner {
+        placeholder "Run..."
+        max-candidates 5
+        fuzzy true
+        history-size 100
+        calc-precision 10
+        shell "/bin/sh"
+        terminal "foot"
+        search-url "https://duckduckgo.com/?q=%s"
+        files true
+        icons "selected"      // none | selected | all
+    }
+
+    systray {
+        enabled true
+        spacing 2
+        padding 2
+        icon-size 16
+    }
+}
+
+binds {
+    // 鼠标：Mod+左键在窗口任意位置拖动；Mod+右键从最近的角缩放。
+    // 这里不需要额外绑定，输入层直接处理。
+
+    Mod+Return { spawn "foot"; }
+    Mod+Q { close-window; }
+    Mod+Shift+Q { quit; }
+    Mod+Shift+E { reload-config; }
+
+    Mod+H { focus-column-left; }
+    Mod+L { focus-column-right; }
+    Mod+J { focus-workspace-down; }
+    Mod+K { focus-workspace-up; }
+    // 循环切换显示器/输出焦点。
+    Mod+O { focus-output; }
+    Mod+Tab { focus-next; }
+    Mod+Shift+Tab { focus-prev; }
+
+    Mod+V { toggle-window-floating; }
+    Mod+F { fullscreen-window; }
+    // scroll 布局：把当前窗口并入左/右相邻列，或拆到右侧新列。
+    Mod+Shift+H { consume "left"; }
+    Mod+Shift+L { consume "right"; }
+    Mod+Shift+C { expel; }
+    Mod+S { toggle-sticky; }
+    Mod+Y { toggle-titlebar; }
+    Mod+R { runner-toggle; }
+
+    Mod+B { set-layout "bsp"; }
+    Mod+Shift+S { set-layout "scroll"; }
+    Mod+Shift+T { set-layout "tabbed"; }
+
+    Mod+1 { focus-workspace 1; }
+    Mod+2 { focus-workspace 2; }
+    Mod+3 { focus-workspace 3; }
+    Mod+Shift+1 { move-window-to-workspace 1; }
+    Mod+Shift+2 { move-window-to-workspace 2; }
+    Mod+Shift+3 { move-window-to-workspace 3; }
+}

@@ -1,0 +1,6 @@
+[toolchain]
+# r0wm 默认使用 nightly（用户约定）。需要可复现构建时，把 channel 换成
+# 具体日期，例如 "nightly-2026-10-30"。
+channel = "nightly"
+profile = "default"
+components = ["rustfmt", "clippy"]
