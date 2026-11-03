@@ -520,12 +520,9 @@ impl WlrLayerShellHandler for State {
         }
         drop(map);
 
-        // 独占键盘的 layer（锁屏、菜单、输入法）映射即拿焦点；窗口焦点暂不抢。
-        if surface.with_cached_state(|state| state.keyboard_interactivity)
-            == KeyboardInteractivity::Exclusive
-        {
-            self.focus_layer_surface(surface.wl_surface().clone());
-        }
+        // 这里拿不到最终的 keyboard_interactivity：客户端通常在 get_layer_surface
+        // 之后、首次 commit 之前才发 set_keyboard_interactivity，此刻 current
+        // state 还是默认的 None。真正的焦点在 commit_layer_surface 里补。
 
         // exclusive zone 变了，工作区要跟着变（bar 在 M4 走同一条路）。
         self.refresh_work_area();
@@ -885,12 +882,35 @@ impl State {
 
         let mut map = layer_map_for_output(output);
         map.arrange();
-        if !initial_sent
-            && let Some(layer) = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
-        {
+        let layer = map
+            .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+            .cloned();
+        if !initial_sent && let Some(layer) = layer.as_ref() {
             layer.layer_surface().send_configure();
         }
         drop(map);
+
+        // keyboard_interactivity 是双缓冲状态：rofi 等菜单在首次 commit 时才让
+        // 它生效。独占键盘的 layer 必须在这里拿焦点，否则键盘事件永远进不了
+        // rofi，表现就是方向键无效、Esc 也退不掉（指针事件不受影响）。
+        if let Some(layer) = layer {
+            let surface = layer.wl_surface().clone();
+            let interactivity = layer.cached_state().keyboard_interactivity;
+            match interactivity {
+                KeyboardInteractivity::Exclusive => {
+                    if self.layer_keyboard_focus.as_ref() != Some(&surface) {
+                        self.focus_layer_surface(surface);
+                    }
+                }
+                KeyboardInteractivity::None => {
+                    if self.layer_keyboard_focus.as_ref() == Some(&surface) {
+                        self.release_layer_focus();
+                    }
+                }
+                // OnDemand 的焦点由点击建立，提交内容时不能把它收走。
+                KeyboardInteractivity::OnDemand => {}
+            }
+        }
 
         self.refresh_work_area();
     }
