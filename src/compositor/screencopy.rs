@@ -35,7 +35,7 @@ use smithay::{
         },
     },
     render_elements,
-    utils::{IsAlive, Physical, Point, Rectangle, Scale, Size, Transform},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
     wayland::{
         Dispatch2, GlobalDispatch2,
         shm::{self, with_buffer_contents_mut},
@@ -72,7 +72,7 @@ enum FrameData {
     Failed,
     Pending {
         output: Output,
-        /// 要拷贝的区域，输出本地物理像素坐标（左上角原点）。
+        /// 要拷贝的区域，输出缓冲坐标（变换前的物理像素，左上角原点）。
         region: Rectangle<i32, Physical>,
         overlay_cursor: bool,
         /// 协议规定 `copy` 只能调用一次。
@@ -157,30 +157,68 @@ impl Dispatch2<ZwlrScreencopyManagerV1, State> for ManagerData {
     }
 }
 
-/// 把协议里的输出与可选区域换算成输出本地物理矩形，并裁到输出范围内。
+/// 把协议里的输出与可选区域换算成输出缓冲矩形，并裁到输出范围内。
 fn resolve_region(
     output: &WlOutput,
     requested: Option<(i32, i32, i32, i32)>,
 ) -> Option<(Output, Rectangle<i32, Physical>)> {
     let output = Output::from_resource(output)?;
     let mode = output.current_mode()?;
-    let output_rect = Rectangle::from_size(mode.size);
+    let requested = requested.map(|(x, y, width, height)| {
+        Rectangle::new(Point::from((x, y)), Size::from((width, height)))
+    });
+    let region = buffer_region(
+        mode.size,
+        output.current_transform(),
+        output.current_scale().fractional_scale(),
+        requested,
+    )?;
+    Some((output, region))
+}
 
-    let region = match requested {
-        None => output_rect,
-        Some((x, y, width, height)) => {
-            if width <= 0 || height <= 0 {
-                return None;
-            }
-            let scale = output.current_scale().fractional_scale();
-            let logical = Rectangle::new(Point::from((x, y)), Size::from((width, height)));
-            logical
-                .to_physical_precise_round(scale)
-                .intersection(output_rect)?
-        }
+/// 输出在逻辑坐标系里的尺寸；算法与 `Space::output_geometry` 保持一致。
+fn output_logical_size(
+    mode: Size<i32, Physical>,
+    transform: Transform,
+    scale: f64,
+) -> Size<i32, Logical> {
+    transform
+        .transform_size(mode)
+        .to_f64()
+        .to_logical(scale)
+        .to_i32_ceil()
+}
+
+/// 协议里的区域是输出逻辑坐标，而截图缓冲是变换前的物理像素。
+///
+/// 先裁到输出逻辑范围内，再用变换的逆映射回缓冲坐标：`grim` 等客户端会
+/// 再按 `wl_output.transform` 把缓冲摆正，所以这里不能提前旋转。
+fn buffer_region(
+    mode: Size<i32, Physical>,
+    transform: Transform,
+    scale: f64,
+    requested: Option<Rectangle<i32, Logical>>,
+) -> Option<Rectangle<i32, Physical>> {
+    let buffer = Rectangle::from_size(mode);
+    let Some(logical) = requested else {
+        return Some(buffer);
     };
+    if logical.size.w <= 0 || logical.size.h <= 0 {
+        return None;
+    }
 
-    (!region.is_empty()).then_some((output, region))
+    let logical_size = output_logical_size(mode, transform, scale);
+    let clipped = logical.intersection(Rectangle::from_size(logical_size))?;
+    let region = clipped
+        .to_f64()
+        .to_buffer(scale, transform.invert(), &logical_size.to_f64())
+        .to_i32_round();
+    // `to_buffer` 给出的是 Buffer 坐标；截图内部统一用 Physical 表示缓冲像素。
+    let region = Rectangle::new(
+        Point::from((region.loc.x, region.loc.y)),
+        Size::from((region.size.w, region.size.h)),
+    );
+    region.intersection(buffer).filter(|region| !region.is_empty())
 }
 
 impl Dispatch2<ZwlrScreencopyFrameV1, State> for FrameData {
@@ -349,7 +387,10 @@ fn render_with_renderer(
     overlay_cursor: bool,
 ) -> Result<Vec<u8>> {
     let mode = output.current_mode().context("输出没有当前模式")?;
+    // 离屏目标保持输出的原始缓冲方向：变换由 tracker 施加，客户端再按
+    // `wl_output.transform` 摆正，和 wlroots 的 screencopy 行为一致。
     let output_size = mode.size;
+    let transform = output.current_transform();
     let scale = Scale::from(output.current_scale().fractional_scale());
 
     // bar 的 tag/标题与标题条可能刚变；截图前先刷新一次位图。
@@ -421,7 +462,7 @@ fn render_with_renderer(
         Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Argb8888, Size::from((output_size.w, output_size.h)))
             .context("创建截图离屏纹理失败")?;
     let mut target = renderer.bind(&mut texture).context("绑定截图离屏目标失败")?;
-    let mut tracker = OutputDamageTracker::new(output_size, scale, Transform::Normal);
+    let mut tracker = OutputDamageTracker::new(output_size, scale, transform);
     // 与屏幕渲染用同一套归属过滤：跨在输出边界上的列不会被截进邻屏。
     let render_space = state.render_space_for_output(output);
     render_output(
@@ -438,6 +479,7 @@ fn render_with_renderer(
     .context("渲染截图帧失败")?;
 
     // OpenGL 的原点在左下角：先把裁切区域翻成 GL 坐标，读完再把行倒过来。
+    // `region` 已经是缓冲坐标，翻转以缓冲高度为基准。
     let gl_region = Rectangle::new(
         Point::from((region.loc.x, output_size.h - region.loc.y - region.size.h)),
         Size::from((region.size.w, region.size.h)),
@@ -459,4 +501,100 @@ fn render_with_renderer(
     }
 
     Ok(pixels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn logical(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new(Point::from((x, y)), Size::from((w, h)))
+    }
+
+    fn physical(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Physical> {
+        Rectangle::new(Point::from((x, y)), Size::from((w, h)))
+    }
+
+    #[test]
+    fn full_capture_keeps_untransformed_buffer_size() {
+        let mode = Size::from((1920, 1080));
+        for transform in [
+            Transform::Normal,
+            Transform::_90,
+            Transform::_180,
+            Transform::_270,
+            Transform::Flipped90,
+        ] {
+            assert_eq!(
+                buffer_region(mode, transform, 1.0, None),
+                Some(physical(0, 0, 1920, 1080))
+            );
+        }
+    }
+
+    #[test]
+    fn normal_region_is_only_scaled() {
+        assert_eq!(
+            buffer_region(
+                Size::from((1920, 1080)),
+                Transform::Normal,
+                1.0,
+                Some(logical(100, 50, 300, 200)),
+            ),
+            Some(physical(100, 50, 300, 200))
+        );
+    }
+
+    #[test]
+    fn rotated_region_maps_back_to_scanout_coordinates() {
+        // 1920x1080 的输出转 90 度后逻辑尺寸是 1080x1920。
+        assert_eq!(
+            buffer_region(
+                Size::from((1920, 1080)),
+                Transform::_90,
+                1.0,
+                Some(logical(100, 50, 300, 200)),
+            ),
+            Some(physical(50, 680, 200, 300))
+        );
+    }
+
+    #[test]
+    fn rotated_region_clips_in_logical_space_first() {
+        assert_eq!(
+            buffer_region(
+                Size::from((1920, 1080)),
+                Transform::_90,
+                1.0,
+                Some(logical(-50, 1900, 100, 100)),
+            ),
+            Some(physical(1900, 1030, 20, 50))
+        );
+    }
+
+    #[test]
+    fn fractional_scale_applies_after_rotation() {
+        assert_eq!(
+            buffer_region(
+                Size::from((1920, 1080)),
+                Transform::_90,
+                1.5,
+                Some(logical(10, 20, 100, 200)),
+            ),
+            Some(physical(30, 915, 300, 150))
+        );
+    }
+
+    #[test]
+    fn region_outside_output_is_rejected() {
+        assert_eq!(
+            buffer_region(
+                Size::from((1920, 1080)),
+                Transform::_90,
+                1.0,
+                Some(logical(2000, 2000, 100, 100)),
+            ),
+            None
+        );
+    }
 }
