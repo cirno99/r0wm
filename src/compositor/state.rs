@@ -568,14 +568,18 @@ impl State {
                 width: geo.size.w,
                 height: geo.size.h,
             };
-            let bar = self
-                .bars
-                .get(&name)
-                .map(|bar| BarSpace {
-                    height: bar.height(),
-                    at_top: bar.at_top(),
-                })
-                .unwrap_or_default();
+            // 只有主输出的 bar 会占工作区；副屏整屏给窗口用。
+            let bar = if self.is_primary_output(&name) {
+                self.bars
+                    .get(&name)
+                    .map(|bar| BarSpace {
+                        height: bar.height(),
+                        at_top: bar.at_top(),
+                    })
+                    .unwrap_or_default()
+            } else {
+                BarSpace::default()
+            };
             let mut work = work_area(output_rect, bar);
             {
                 let mut map = smithay::desktop::layer_map_for_output(&output);
@@ -649,7 +653,12 @@ impl State {
     }
 
     /// 当前焦点输出的 bar 高度；通知/菜单排版用。
+    /// 输出没有 bar（副屏）或 bar 被全屏隐藏时按 0 处理。
     pub fn bar_height(&self) -> i32 {
+        let name = self.focused_output_name();
+        if !self.bar_visible(&name) {
+            return 0;
+        }
         self.focused_bar().map(Bar::height).unwrap_or(0)
     }
 
@@ -661,12 +670,21 @@ impl State {
             .find(|candidate| candidate.name() == output)
             .cloned()
         {
+            let changed = self
+                .output
+                .as_ref()
+                .map(|current| current.name())
+                .is_none_or(|current| current != output);
             self.work_area = self
                 .work_areas
                 .get(output)
                 .copied()
                 .unwrap_or(self.work_area);
             self.output = Some(next);
+            // 键盘焦点换屏时指针也要跟过去；指针自己move过来的不会触发（已在目标屏上）。
+            if changed {
+                self.warp_pointer_to_output(output);
+            }
         }
     }
 
@@ -1130,11 +1148,19 @@ impl State {
         }
         self.shell.set_focus(id);
         self.after_focus_change();
+        self.warp_pointer_to_window(id);
     }
 
     /// 输出就绪时立刻重画 bar（没有输出时下一帧会自然刷新）。
+    ///
+    /// 只有主输出有 bar，所以无论键盘焦点在哪块屏，都刷新主输出的那一条。
     fn refresh_bar(&mut self) {
-        if let Some(output) = self.output.clone() {
+        if let Some(output) = self
+            .outputs
+            .iter()
+            .find(|output| self.is_primary_output(&output.name()))
+            .cloned()
+        {
             self.update_bar(&output);
         }
         self.request_redraw();
@@ -1498,6 +1524,7 @@ impl State {
         }
         self.shell.set_focus(id);
         self.after_focus_change();
+        self.warp_pointer_to_window(id);
     }
 
     /// 给客户端一个激活令牌，让它在动作回调里能抬起自己的窗口。
@@ -1680,9 +1707,31 @@ impl State {
         })
     }
 
-    /// bar 是否应该显示/接收输入：全屏窗口覆盖本输出时隐藏。
+    /// bar 是否应该显示/接收输入：只有主输出有 bar，且全屏窗口覆盖时隐藏。
     pub fn bar_visible(&self, output: &str) -> bool {
-        !self.fullscreen_active(output)
+        self.is_primary_output(output) && !self.fullscreen_active(output)
+    }
+
+    /// 主输出：显式配置了 `primary` 的输出优先，否则连接顺序里的第一个。
+    ///
+    /// 副屏不画 bar，工作区也不会为 bar 留高度。
+    pub fn is_primary_output(&self, name: &str) -> bool {
+        let mut first = None;
+        for output in &self.outputs {
+            let output_name = output.name();
+            if first.is_none() {
+                first = Some(output_name.clone());
+            }
+            if self
+                .config
+                .outputs
+                .iter()
+                .any(|rule| rule.primary && rule.name == output_name)
+            {
+                return name == output_name;
+            }
+        }
+        first.as_deref() == Some(name)
     }
 
     /// 把全局坐标换算成「输出名 + bar 内逻辑坐标」；不在任何 bar 上就是 `None`。
@@ -1855,31 +1904,46 @@ impl State {
         use smithay::desktop::WindowSurfaceType;
         use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
-        // layer-shell 在窗口之上（bar、锁屏、通知）；先按层从上到下命中。
+        // 叠层顺序：Overlay/Top 在窗口之上，窗口居中，Bottom/Background 在窗口之下。
+        // 别把壁纸（swaybg 的 Background 层）挡在窗口前面，否则指针永远进不了窗口。
         if let Some(output) = self.output_at(pos)
             && let Some(output_geo) = self.space.output_geometry(&output)
         {
             let origin = output_geo.loc.to_f64();
             let map = smithay::desktop::layer_map_for_output(&output);
-            for layer in [
-                WlrLayer::Overlay,
-                WlrLayer::Top,
-                WlrLayer::Bottom,
-                WlrLayer::Background,
-            ] {
-                let Some(surface) = map.layer_under(layer, pos - origin) else {
-                    continue;
-                };
+            let layer_hit = |layer: WlrLayer| {
+                let surface = map.layer_under(layer, pos - origin)?;
                 let location = map
                     .layer_geometry(surface)
                     .map(|geometry| geometry.loc.to_f64())
                     .unwrap_or_default();
-                if let Some((wl_surface, point)) =
-                    surface.surface_under(pos - origin - location, WindowSurfaceType::ALL)
-                {
-                    return Some((wl_surface, point.to_f64() + location + origin));
+                let (wl_surface, point) =
+                    surface.surface_under(pos - origin - location, WindowSurfaceType::ALL)?;
+                Some((wl_surface, point.to_f64() + location + origin))
+            };
+            for layer in [WlrLayer::Overlay, WlrLayer::Top] {
+                if let Some(hit) = layer_hit(layer) {
+                    return Some(hit);
                 }
             }
+            // 窗口位于 Top 与 Bottom 层之间。
+            if let Some(hit) = self
+                .space
+                .element_under(pos)
+                .and_then(|(window, location)| {
+                    window
+                        .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                        .map(|(surface, point)| (surface, (point + location).to_f64()))
+                })
+            {
+                return Some(hit);
+            }
+            for layer in [WlrLayer::Bottom, WlrLayer::Background] {
+                if let Some(hit) = layer_hit(layer) {
+                    return Some(hit);
+                }
+            }
+            return None;
         }
 
         self.space
@@ -1891,8 +1955,14 @@ impl State {
             })
     }
 
-    /// 指针是否落在任何 layer-shell 表面上（bar 等），此时不抢窗口焦点。
+    /// 指针是否落在窗口之上的 layer-shell 表面（bar、菜单等）。
+    ///
+    /// 只看 Top/Overlay：Bottom/Background（如 swaybg 壁纸）在窗口下面，
+    /// 不能因为它们的 bbox 覆盖全屏就阻止窗口获得焦点/拖动。
     pub fn pointer_over_layer(&self, pos: Point<f64, Logical>) -> bool {
+        use smithay::desktop::WindowSurfaceType;
+        use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
+
         let Some(output) = self.output_at(pos) else {
             return false;
         };
@@ -1902,14 +1972,16 @@ impl State {
         let origin = output_geo.loc.to_f64();
         let map = smithay::desktop::layer_map_for_output(&output);
         map.layers().rev().any(|layer| {
+            if !matches!(layer.layer(), WlrLayer::Overlay | WlrLayer::Top) {
+                return false;
+            }
             let location = map
                 .layer_geometry(layer)
                 .map(|geometry| geometry.loc.to_f64())
                 .unwrap_or_default();
             layer
-                .bbox_with_popups()
-                .to_f64()
-                .contains(pos - origin - location)
+                .surface_under(pos - origin - location, WindowSurfaceType::ALL)
+                .is_some()
         })
     }
 
@@ -2571,14 +2643,27 @@ impl State {
 
     /// 指针下要求「点击才给键盘」的 layer（`OnDemand`）。
     pub fn on_demand_layer_under(&self, pos: Point<f64, Logical>) -> Option<WlSurface> {
+        use smithay::desktop::WindowSurfaceType;
+        use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
+
         let output = self.output_at(pos)?;
         let origin = self.space.output_geometry(&output)?.loc.to_f64();
         let map = smithay::desktop::layer_map_for_output(&output);
         for layer in map.layers().rev() {
+            // 只有窗口之上的 layer 能拿键盘；壁纸/底栏不参与。
+            if !matches!(layer.layer(), WlrLayer::Overlay | WlrLayer::Top) {
+                continue;
+            }
             let Some(geometry) = map.layer_geometry(layer) else {
                 continue;
             };
             if !geometry.to_f64().contains(pos - origin) {
+                continue;
+            }
+            if layer
+                .surface_under(pos - origin - geometry.loc.to_f64(), WindowSurfaceType::ALL)
+                .is_none()
+            {
                 continue;
             }
             if layer

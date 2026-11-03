@@ -30,6 +30,8 @@ pub enum Action {
     FocusRowDown,
     /// 焦点循环到下一个输出。
     FocusOutput,
+    /// 把焦点窗口移到下一个输出。
+    MoveOutput,
     /// 列内 tab 循环。
     TabNext,
     TabPrev,
@@ -110,6 +112,10 @@ impl Action {
             "focus_output" | "focus_output_next" | "focusoutput" | "focusoutputnext" => {
                 Self::FocusOutput
             }
+            "move_output"
+            | "move_output_next"
+            | "move_window_to_output"
+            | "move_window_to_output_next" => Self::MoveOutput,
             "tab_next" => Self::TabNext,
             "tab_prev" => Self::TabPrev,
             "focus_next" => Self::FocusNext,
@@ -319,5 +325,17 @@ mod tests {
             Action::parse("focus_output_next", None).unwrap(),
             Action::FocusOutput
         );
+    }
+
+    #[test]
+    fn move_output_accepts_both_spellings() {
+        for name in [
+            "move_output",
+            "move_output_next",
+            "move_window_to_output",
+            "move_window_to_output_next",
+        ] {
+            assert_eq!(Action::parse(name, None).unwrap(), Action::MoveOutput);
+        }
     }
 }

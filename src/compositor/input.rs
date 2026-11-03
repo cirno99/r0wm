@@ -171,6 +171,10 @@ impl State {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
+        // 焦点跟随鼠标：悬停到窗口上就切键盘/动作焦点。
+        if !pointer.is_grabbed() {
+            self.focus_window_under_pointer(position);
+        }
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.surface_under(position);
         pointer.motion(
@@ -183,6 +187,87 @@ impl State {
             },
         );
         pointer.frame(self);
+    }
+
+    /// 焦点跟随鼠标：指针悬停在某个普通窗口上时把焦点切过去。
+    ///
+    /// layer-shell（bar/菜单）、合成器自绘的标题条与 bar 不属于窗口，
+    /// 它们上方保持原焦点；有 layer 持有键盘时也不抢。
+    fn focus_window_under_pointer(&mut self, position: Point<f64, Logical>) {
+        if self.layer_keyboard_focus.is_some()
+            || self.pointer_over_layer(position)
+            || self.bar_contains(position)
+            || self.title_hit(position).is_some()
+        {
+            return;
+        }
+        let Some((window, _)) = self.space.element_under(position) else {
+            return;
+        };
+        let Some(id) = self.shell.id_of_window(&window) else {
+            return;
+        };
+        if self.shell.focus() == Some(id) {
+            return;
+        }
+        self.focus_window(Some(id), SERIAL_COUNTER.next_serial());
+    }
+
+    /// 把指针瞬移到 `position`，像真实移动一样更新客户端焦点（切输出时用）。
+    pub(crate) fn warp_pointer(&mut self, position: Point<f64, Logical>) {
+        if self.pointer_location == position {
+            return;
+        }
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        // 正在拖动/缩放时不要瞬移，否则会突然甩动窗口。
+        if pointer.is_grabbed() {
+            return;
+        }
+        self.pointer_location = position;
+        self.request_redraw();
+        self.set_title_hover(position);
+        let serial = SERIAL_COUNTER.next_serial();
+        let under = self.surface_under(position);
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location: position,
+                serial,
+                time: InputTime::now(),
+            },
+        );
+        pointer.frame(self);
+    }
+
+    /// 焦点换到另一个输出时把指针也带过去（指针已经在那块屏上就不动）。
+    pub(crate) fn warp_pointer_to_output(&mut self, name: &str) {
+        let Some(output) = self.outputs.iter().find(|output| output.name() == name) else {
+            return;
+        };
+        let Some(geo) = self.space.output_geometry(output) else {
+            return;
+        };
+        if geo.to_f64().contains(self.pointer_location) {
+            return;
+        }
+        let target = geo.loc.to_f64() + geo.size.to_f64() / 2.0;
+        self.warp_pointer(target);
+    }
+
+    /// 把指针移到某个窗口中心；键盘切输出/移动窗口后调用，真正“鼠标跟着焦点走”。
+    pub(crate) fn warp_pointer_to_window(&mut self, id: crate::shell::WindowId) {
+        let Some(geo) = self
+            .shell
+            .window(id)
+            .and_then(|window| self.space.element_geometry(window))
+        else {
+            return;
+        };
+        let target = geo.loc.to_f64() + geo.size.to_f64() / 2.0;
+        self.warp_pointer(target);
     }
 
     fn on_pointer_button<I: InputBackend>(&mut self, event: impl PointerButtonEvent<I>) {

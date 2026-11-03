@@ -111,6 +111,8 @@ binds {
     Mod+K { focus-workspace-up; }
     // 循环切换显示器/输出焦点。
     Mod+O { focus-output; }
+    // 把当前窗口移到下一个输出（焦点与鼠标一起跟过去）。
+    Mod+Shift+O { move-output; }
     Mod+Tab { focus-next; }
     Mod+Shift+Tab { focus-prev; }
 

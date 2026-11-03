@@ -38,7 +38,8 @@ tag、算式、文件各一个模式前缀，带模糊匹配、历史与使用�
 （libseat 会话 + DRM/KMS 直出 + libinput 输入，`--backend udev` 或 `--features udev`），
 与 winit 后端共用同一份 `State`、同一套 bar/标题条/光标叠加层。最新一轮补齐了
 **中文输入法**（text-input-v3 + input-method-v2，fcitx5/ibus 可直接连接）、
-**多输出**（每个输出独立 tagset、工作区、bar 与标题条，指针可跨屏移动）、
+**多输出**（每个输出独立 tagset、工作区与标题条；bar 只在 `primary` 输出上显示，
+副屏窗口占满整屏）、指针可跨屏移动、
 **niri 风格 KDL 配置**（`input` / `output` / `layout` / `general` / `binds`），
 以及 udev 空帧也发送 frame callback 的渲染修复。进度见
 [`docs/parity.md`](docs/parity.md)。
@@ -180,6 +181,7 @@ r0wm 会打印自己创建的 `WAYLAND_DISPLAY`，并把子进程连到它上面
 内置键绑定（配置 `binds` 为空时生效）：`super+Return` 启动终端、`super+h/l`
 在行内切换列（bsp 下是几何邻居）、`super+j/k` 在 bsp 下按屏幕几何上下切换窗口、
 其它布局下在可见行之间切换、`super+o` 循环切换显示器/输出焦点、
+`super+shift+o` 把焦点窗口移到下一个输出（焦点和鼠标一起跟过去）、
 `super+Tab` 按最近使用顺序切焦点、`super+b` / `super+q` 切到 bsp / scroll 布局、
 `super+v` 平铺/浮动互转、`super+f` 进/出全屏（全屏时 bar 自动隐藏）、
 `super+s` 浮动窗口置顶（sticky：所有 tag 可见且永远在最上）、
@@ -192,7 +194,7 @@ scroll 布局下把多个窗口放进同一列：`super+shift+h` / `super+shift+
 `super+n` 翻正文、`super+shift+n` 打开（触发 `default` 动作）、`super+ctrl+n` /
 `super+alt+n` 在历史里前后走、`super+ctrl+shift+n` 全部关掉、`super+a` 展开动作选择器。
 配置里写了 `binds` 就完全替换默认表；`tab_next`/`tab_prev`、`transfer_to`、
-`toggle_tag`、`view_prev`、`shift_view`、`focus_output`、`toggle_sticky`、
+`toggle_tag`、`view_prev`、`shift_view`、`focus_output`、`move_output`、`toggle_sticky`、
 `toggle_titlebar`、`close`（别名 `kill`，请求关闭焦点窗口）、`notify_open`、
 `notify_dismiss` 等动作可在配置里自行绑定。
 

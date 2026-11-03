@@ -529,6 +529,10 @@ fn parse_action(node: &Node) -> Option<(String, Option<String>)> {
         "focus_workspace_up" => "focus_row_up".into(),
         "focus_workspace_down" => "focus_row_down".into(),
         "focus_output" | "focus_output_next" => "focus_output".into(),
+        "move_output"
+        | "move_output_next"
+        | "move_window_to_output"
+        | "move_window_to_output_next" => "move_output".into(),
         "focus_workspace" => "view".into(),
         "move_window_to_workspace" | "move_window_to_workspace_up" => "transfer_to".into(),
         "toggle_window_floating" | "toggle_floating" => "toggle_floating".into(),
@@ -641,6 +645,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.binds.len(), 1);
+    }
+
+    #[test]
+    fn move_output_bind_parses() {
+        let config = parse(
+            r#"
+            binds {
+                Mod+Shift+O { move-output; }
+            }
+            "#,
+        )
+        .unwrap();
+        let bind = &config.binds[0];
+        assert_eq!(bind.mods, ["super", "shift"]);
+        assert_eq!(bind.key, "O");
+        assert_eq!(bind.action, "move_output");
+        assert_eq!(bind.arg, None);
     }
 
     #[test]

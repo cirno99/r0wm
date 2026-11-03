@@ -86,12 +86,13 @@ impl Binds {
 
     /// 内置默认表：`super` 系绑定，与 g0wm 的习惯一致。
     pub fn defaults(terminal: &str) -> Self {
-        let entries: [(&[&str], &str, &str, Option<&str>); 26] = [
+        let entries: [(&[&str], &str, &str, Option<&str>); 27] = [
             (&["super"], "h", "focus_column_left", None),
             (&["super"], "l", "focus_column_right", None),
             (&["super"], "k", "focus_row_up", None),
             (&["super"], "j", "focus_row_down", None),
             (&["super"], "o", "focus_output", None),
+            (&["super", "shift"], "o", "move_output", None),
             (&["super"], "Tab", "focus_next", None),
             (&["super"], "Return", "spawn", Some(terminal)),
             (&["super"], "v", "toggle_floating", None),
@@ -210,6 +211,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(binds.lookup(&mods, &[o]), Some(&Action::FocusOutput));
+
+        let mods = ModifiersState {
+            logo: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(binds.lookup(&mods, &[o]), Some(&Action::MoveOutput));
     }
 
     #[test]

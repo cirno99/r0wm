@@ -82,6 +82,7 @@ impl State {
             Action::TabNext => self.cycle_tab(1),
             Action::TabPrev => self.cycle_tab(-1),
             Action::FocusOutput => self.focus_next_output(),
+            Action::MoveOutput => self.move_window_to_next_output(),
         }
     }
 
@@ -256,17 +257,9 @@ impl State {
 
     /// 焦点按连接顺序循环到下一个输出，并把该输出上的窗口设为当前焦点。
     fn focus_next_output(&mut self) {
-        if self.outputs.len() < 2 {
+        let Some(name) = self.next_output_name() else {
             return;
-        }
-        let current = self.focused_output_name();
-        let index = self
-            .outputs
-            .iter()
-            .position(|output| output.name() == current)
-            .unwrap_or(0);
-        let next = (index + 1) % self.outputs.len();
-        let name = self.outputs[next].name();
+        };
         self.focus_output(&name);
 
         let visible = self.shell.visible_tags(&name);
@@ -275,7 +268,61 @@ impl State {
             None => self.shell.clear_focus(),
         }
         self.after_focus_change();
+        if let Some(id) = self.shell.focus() {
+            self.warp_pointer_to_window(id);
+        }
         tracing::info!(output = %name, "切换输出焦点");
+    }
+
+    /// 按连接顺序返回当前焦点输出的下一个输出（不足两块屏时 `None`）。
+    fn next_output_name(&self) -> Option<String> {
+        if self.outputs.len() < 2 {
+            return None;
+        }
+        let current = self.focused_output_name();
+        let index = self
+            .outputs
+            .iter()
+            .position(|output| output.name() == current)
+            .unwrap_or(0);
+        Some(self.outputs[(index + 1) % self.outputs.len()].name())
+    }
+
+    /// 把焦点窗口移到下一个输出，并让焦点（和指针）跟过去。
+    fn move_window_to_next_output(&mut self) {
+        let Some(id) = self.shell.focus() else {
+            return;
+        };
+        let Some(name) = self.next_output_name() else {
+            return;
+        };
+        self.shell.move_to_output(id, &name);
+        // 浮动/全屏窗口的旧坐标属于原输出：浮动窗口重新居中到新输出，
+        // 全屏窗口清掉旧位置，交给 arrange 用目标输出的整屏区域。
+        match self.shell.find(id).map(|entry| entry.layer) {
+            Some(Layer::Floating) => self.place_floating(id),
+            Some(Layer::Fullscreen) => {
+                if let Some(entry) = self.shell.find_mut(id) {
+                    entry.floating_loc = None;
+                }
+            }
+            _ => {}
+        }
+        // 目标输出当前没看这个 tag 的话，就把窗口所在 tag 切出来，
+        // 否则窗口移过去会直接“消失”（基线 move container to output 的直觉）。
+        if let Some(entry) = self.shell.find(id) {
+            let tags = entry.tags;
+            if tags & self.shell.visible_tags(&name) == 0 {
+                self.shell.set_visible_tags(&name, tags);
+            }
+        }
+        self.focus_output(&name);
+        self.shell.set_focus(id);
+        self.after_focus_change();
+        if let Some(id) = self.shell.focus() {
+            self.warp_pointer_to_window(id);
+        }
+        tracing::info!(output = %name, window = id, "移动窗口到下一个输出");
     }
 
     fn cycle_tab(&mut self, step: isize) {

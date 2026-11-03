@@ -714,6 +714,7 @@ fn render_device(
     );
     if let Some(output_geo) = state.space.output_geometry(output)
         && let Some(bar) = state.bar_for(output)
+        && state.bar_visible(&output.name())
     {
         elements.extend(
             bar.elements(renderer, output_geo)
